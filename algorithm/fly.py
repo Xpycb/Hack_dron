@@ -52,7 +52,7 @@ def next_step(targets, iter):
     :param targets: список точек, к которым летит дрон
     :param iter: текущая итерация
     """
-    global TAG, ITER, IS_X
+    #global TAG, ITER, IS_X
 
     data = get_data(connection.receive_data())
     fires = [0 for _ in range(len(targets))]
@@ -90,7 +90,6 @@ def next_step_lan(targets, iter):
     :param iter: текущая итерация
     """
     global TAG, ITER, IS_X
-
     data = get_data(connection.receive_data())
     fires = [0 for _ in range(len(targets))]
     result = []
@@ -111,8 +110,6 @@ def next_step_lan(targets, iter):
             fires[i] = 1
         else:
             new_data = move(direction, drone, ANGLE, H)
-        if drone["isDroneCrushed"] == True:
-            connection.send_data('restartScene')
         result.append(new_data)
     connection.send_data(concat_engines(result, T))
     time.sleep(T)
@@ -122,10 +119,12 @@ def run(targets):
     i = 0
     fires = next_step_lan(targets, i)
     while sum(fires) != len(targets):
+        data = get_data(connection.receive_data())
+        if data[0]["isDroneCrushed"] == True:
+            connection.send_data('restartScene')
+            time.sleep(T)
         fires = next_step_lan(targets, i)
         i += 1
-
-
 def go_x(drone_position, target_position, lidars, direction):
     """Хочу двигаться по Z, но не могу - мешает препятствие.
     Значит нужно лететь по X пока не смогу лететь по Z"""
