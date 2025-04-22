@@ -2,11 +2,12 @@ import time
 
 from algorithm.PID import move, get_data, equal, concat_engines
 from connection.SocketConnection import SocketConnection
+from algorithm.drone_agent import DroneAgent
 
 connection = SocketConnection()
 H = 8  # высота, на которой летит дрон
 T = 0.1  # время, через которое симулятор пришлет новый пакет данных
-ANGLE = 5  # угол наклона дрона
+ANGLE = 10  # угол наклона дрона
 ITER = [0, 300, 600, 900, 1200]  # задержка для следующих дронов
 
 # Если tag = None то просто запускаем get_direction()
@@ -48,7 +49,7 @@ def get_direction2(drone_x, fire_x):
 
 
 def next_step(targets, iter):
-    """Функция анализирует данны с симулятора и делает один шаг, то есть одну отправку на симулятор
+    """Функция анализирует данные с симулятора и делает один шаг, то есть одну отправку на симулятор
     :param targets: список точек, к которым летит дрон
     :param iter: текущая итерация
     """
@@ -57,7 +58,10 @@ def next_step(targets, iter):
     data = get_data(connection.receive_data())
     fires = [0 for _ in range(len(targets))]
     result = []
-
+    if data[0]['isDroneCrushed']:
+        connection.send_data('restartScene')
+        time.sleep(T)
+        return fires
     for i, drone in enumerate(data):
         if TAG[i] is None:
             direction, TAG[i] = get_direction(drone["droneVector"], targets[i], drone["lidarInfo"], i)
@@ -83,46 +87,11 @@ def next_step(targets, iter):
     return fires
 
 
-
-def next_step_lan(targets, iter):
-    """Функция анализирует данны с симулятора и делает один шаг, то есть одну отправку на симулятор
-    :param targets: список точек, к которым летит дрон
-    :param iter: текущая итерация
-    """
-    global TAG, ITER, IS_X
-
-    data = get_data(connection.receive_data())
-    fires = [0 for _ in range(len(targets))]
-    result = []
-
-    for i, drone in enumerate(data):
-        if TAG[i] is None:
-            direction, TAG[i] = get_direction(drone["droneVector"], targets[i], drone["lidarInfo"], i)
-        elif "x" in TAG[i]:
-            direction, TAG[i] = go_x(drone["droneVector"], targets[i], drone["lidarInfo"], TAG[i][1])
-            IS_X[i] = False
-        elif "z" in TAG[i]:
-            direction, TAG[i] = go_z(drone["droneVector"], targets[i], drone["lidarInfo"], TAG[i][1])
-
-        if ITER[i] > iter:
-            new_data = move("f", drone, 0, 0)
-        elif direction is None:
-            new_data = move("f", drone, 0, H, drop=True)
-            fires[i] = 1
-        else:
-            new_data = move(direction, drone, ANGLE, H)
-        if drone["isDroneCrushed"] == True:
-            connection.send_data('restartScene')
-        result.append(new_data)
-    connection.send_data(concat_engines(result, T))
-    time.sleep(T)
-
-    return fires
 def run(targets):
     i = 0
-    fires = next_step_lan(targets, i)
+    fires = next_step(targets, i)
     while sum(fires) != len(targets):
-        fires = next_step_lan(targets, i)
+        fires = next_step(targets, i)
         i += 1
 
 
@@ -169,3 +138,57 @@ def get_direction(drone_position, target_position, lidars, i):
         return directions2[0], "x" + directions2[0]
 
     return None, None
+
+
+# В конец файла добавить:
+def frun_agent(targets):
+    """Запуск с RL-агентом"""
+    from algorithm.drone_agent import DroneAgent
+    agent = DroneAgent()
+
+    i = 0
+    while True:
+        fires = next_step_agent(targets, i, agent)
+        if sum(fires) == len(targets):
+            break
+        i += 1
+
+
+def next_step_agent(targets, iter, agent):
+    data = get_data(connection.receive_data())
+    fires = [0 for _ in range(len(targets))]
+    result = []
+
+    if data[0]['isDroneCrushed']:
+        connection.send_data('restartScene')
+        time.sleep(T)
+        return fires
+
+    for i, drone in enumerate(data):
+        if ITER[i] > iter:
+            new_data = move("f", drone, 0, 0)
+        else:
+            action = agent.predict(drone, targets[i])
+            # Преобразование непрерывного действия в дискретное направление
+            x_action, z_action = action
+            if abs(x_action) > abs(z_action):
+                direction = "r" if x_action > 0 else "l"
+            else:
+                direction = "f" if z_action > 0 else "b"
+
+            new_data = move(direction, drone, ANGLE, H)
+
+            if _is_at_target(drone, targets[i]):
+                new_data = move("f", drone, 0, H, drop=True)
+                fires[i] = 1
+
+        result.append(new_data)
+
+    connection.send_data(concat_engines(result, T))
+    time.sleep(T)
+    return fires
+
+
+def _is_at_target(drone_data, target):
+    return (abs(drone_data["droneVector"]["x"] - target["x"]) < 1 and
+            abs(drone_data["droneVector"]["z"] - target["z"]) < 1)
